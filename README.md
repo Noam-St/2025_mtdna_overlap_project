@@ -1,8 +1,8 @@
-# Mitochondrial DNA Overlapping Sequences Analysis
+# 2025_mtdna_overlap_project
 
-Analysis code for "The functional importance of mitochondrial sequences with dual functions: overlapping protein-protein and protein-RNA gene sequences as test cases."
+Mitochondrial DNA overlapping sequences analysis — code and materials for the manuscript "The functional importance of mitochondrial sequences with dual functions: overlapping protein-protein and protein-RNA gene sequences as test cases."
 
-## Repository Structure
+## Repository structure
 
 - `scripts/`: Analysis scripts
   - `01_minimap2_alignment.sh`: Sequence alignment
@@ -24,5 +24,20 @@ Analysis code for "The functional importance of mitochondrial sequences with dua
 - `docs/`: Documentation and supplementary information
 
 ## Requirements
+
+Create the conda environment from `environment.yml`:
+
 ```bash
 conda env create -f environment.yml
+```
+
+## Notes
+
+- This repository contains analysis code, intermediate results and utilities used for the manuscript. Large input data files are not tracked here — see `data/` for expected inputs.
+- Update the project title in this file if the manuscript title changes.
+
+If you'd like, I can also:
+
+- Add a short usage example for the main scripts.
+- Create a minimal `CONTRIBUTING.md` or `CITATION.cff`.
+
