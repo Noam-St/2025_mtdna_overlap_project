@@ -1,0 +1,8 @@
+*
+!.gitignore
+!README.md
+!*.py
+!*.ipynb
+!*.R
+!LICENSE
+!final.csv
