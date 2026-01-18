@@ -39,32 +39,75 @@ import os
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# KNOWN HAPLOGROUP MARKERS DATABASE (added for validation)
-KNOWN_HAPLOGROUP_MARKERS = {
-    'H': [2706, 7028],  # Common H markers
-    'U': [12308],       # U5 marker
-    'J': [4216, 13708], # J markers
-    'T': [4216, 4917, 8697, 15607], # T markers
-    'K': [8860, 9055],  # K markers
-    'L0': [769, 1018, 2706, 7055], # L0 markers
-    'L1': [3592, 7055, 12501], # L1 markers
-    'L2': [198, 3594, 7055], # L2 markers
-    'L3': [769, 1018, 7055], # L3 markers
-    'M': [8701, 9540, 10398, 10400], # M markers
-    'N': [5178, 8701, 9540], # N markers
-    'A': [8701, 13263, 16290], # A markers
-    'B': [8281, 9540, 14783], # B markers
-    'C': [13263, 14783], # C markers
-    'D': [5178, 16362], # D markers
-    'F': [6392, 10310], # F markers
-    'G': [4833, 5460], # G markers
-    'HV': [14766], # HV marker
-    'R': [12705], # R marker
-    'X': [1719, 6371, 8913, 11251], # X markers
-    'W': [8994, 11947], # W markers
-    'I': [10034, 16129], # I markers
-    'V': [4580], # V marker
-}
+# Default path for haplogroup markers file
+DEFAULT_HAPLOGROUP_MARKERS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'data', 'haplogroups', 'haplogroup_markers.xlsx'
+)
+
+def load_haplogroup_markers(filepath: Optional[str] = None) -> Dict[str, List[int]]:
+    """
+    Load haplogroup markers from an Excel file.
+
+    Parameters:
+    -----------
+    filepath : str, optional
+        Path to the haplogroup markers Excel file. If not provided,
+        uses the default path: data/haplogroups/haplogroup_markers.xlsx
+
+    Returns:
+    --------
+    Dict[str, List[int]]: Dictionary mapping haplogroup names to lists of marker positions
+    """
+    if filepath is None:
+        filepath = DEFAULT_HAPLOGROUP_MARKERS_PATH
+
+    if not os.path.exists(filepath):
+        logger.warning(f"Haplogroup markers file not found: {filepath}. Using empty dictionary.")
+        return {}
+
+    try:
+        df = pd.read_excel(filepath)
+
+        # Validate required columns
+        required_cols = ['Top Level Haplogroup', 'HG Markers']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            logger.warning(f"Missing columns in haplogroup markers file: {missing_cols}. Using empty dictionary.")
+            return {}
+
+        # Filter rows with valid haplogroup data
+        valid_df = df[df['Top Level Haplogroup'].notna()].copy()
+
+        markers_dict = {}
+        for _, row in valid_df.iterrows():
+            haplogroup = str(row['Top Level Haplogroup']).strip()
+            markers_str = row['HG Markers']
+
+            if pd.isna(markers_str) or not isinstance(markers_str, str):
+                markers_dict[haplogroup] = []
+                continue
+
+            # Parse markers: extract position numbers from strings like "1048T", "3516a", "249d", "(310C)"
+            positions = []
+            for marker in markers_str.split(','):
+                marker = marker.strip().strip('()')
+                # Extract leading digits as the position
+                match = re.match(r'^(\d+)', marker)
+                if match:
+                    positions.append(int(match.group(1)))
+
+            markers_dict[haplogroup] = positions
+
+        logger.info(f"Loaded haplogroup markers for {len(markers_dict)} haplogroups from {filepath}")
+        return markers_dict
+
+    except Exception as e:
+        logger.warning(f"Error loading haplogroup markers from {filepath}: {e}. Using empty dictionary.")
+        return {}
+
+# Load haplogroup markers from file (can be reloaded with custom path using load_haplogroup_markers())
+KNOWN_HAPLOGROUP_MARKERS = load_haplogroup_markers()
 
 def filter_sequence_to_acgt(sequence: str) -> str:
     """

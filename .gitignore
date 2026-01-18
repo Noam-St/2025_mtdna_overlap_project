@@ -43,3 +43,6 @@
 *.vcf
 \\docs\\*
 \\results\\*
+\\data\\*.fasta
+\\data\\hs_pop_seq\\*
+\\figures\\*

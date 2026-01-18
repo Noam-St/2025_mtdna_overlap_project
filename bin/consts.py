@@ -879,3 +879,20 @@ GENE_START_DICT = {
         'TS2_TL2_ND5' : 12207
         
 }
+
+# Define the overlap start positions
+OVERLAP_START_POSITIONS = {
+    'SHLP1_seq' : 2484,
+    'SHLP2_seq' : 2087,
+    'SHLP3_seq' : 1702,
+    'SHLP4_seq' : 2441,
+    'SHLP5_seq' : 2779,
+    'SHLP6_seq' : 2989,
+    'Hum_seq' : 2632,
+    'MOTC_seq' : 1342,
+    'CO1_alt_seq' : 6088,
+    'ND4_alt_seq' : 11556,
+    'CYB_alt_seq' : 14832,
+    'GAU_seq' : 6307,
+    'shmoose_seq' : 12233
+    }
