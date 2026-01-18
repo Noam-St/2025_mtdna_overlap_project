@@ -18,8 +18,6 @@ import mygene
 
 reload(consts)
 PATH = os.getcwd()
-Entrez.email = 'your_email@example.com'
-Entrez.API = '[REMOVED_API_KEY]' 
 
 # Initialize once
 mg = mygene.MyGeneInfo()
