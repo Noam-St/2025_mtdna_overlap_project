@@ -1,0 +1,27 @@
+name: mtdna_analysis
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  # Bioinformatics tools
+  - minimap2
+  - lofreq
+  - bcftools
+  - samtools
+  - hyphy
+  # Core Python packages
+  - biopython
+  - pandas
+  - numpy
+  - scipy
+  - matplotlib
+  - seaborn
+  - statsmodels
+  - cyvcf2
+  - pip
+  - pip:
+    - matplotlib-venn
+    - statannotations
+    - adjustText
