@@ -1,4 +1,5 @@
 *.txt
+!requirements.txt
 *.json
 *.csv
 *.jvp
@@ -46,3 +47,11 @@
 \\data\\*.fasta
 \\data\\hs_pop_seq\\*
 \\figures\\*
+
+# Specific data files
+data/gene_overlap_positions.csv
+data/hs_row.parquet
+data/per_gene_alignment_fasta/
+data/haplogroups/all_haplogroups.csv
+data/haplogroups/haplogroup_markers.xlsx
+mitoriboseq_analysis/data/hek_ini/mito_cumsum_table.csv

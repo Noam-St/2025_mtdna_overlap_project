@@ -16,12 +16,15 @@ dependencies:
   - pandas
   - numpy
   - scipy
+  - pyarrow
   - matplotlib
   - seaborn
   - statsmodels
   - cyvcf2
+  - mygene
   - pip
   - pip:
     - matplotlib-venn
     - statannotations
     - adjustText
+    - mycolorpy
