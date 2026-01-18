@@ -25,9 +25,6 @@ Usage:
 Author: Analysis for mitochondrial microproteins
 """
 
-import sys
-sys.path.append('/mnt/user-data/uploads')
-
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional

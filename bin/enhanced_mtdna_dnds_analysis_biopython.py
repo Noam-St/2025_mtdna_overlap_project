@@ -41,7 +41,7 @@ MITOCHONDRIAL_GENETIC_CODE = {
     'ATT': 'I', 'ATC': 'I', 'ATA': 'M', 'ATG': 'M',  # ATA is Met in mitochondria
     'ACT': 'T', 'ACC': 'T', 'ACA': 'T', 'ACG': 'T',
     'AAT': 'N', 'AAC': 'N', 'AAA': 'K', 'AAG': 'K',
-    'AGT': 'S', 'AGC': 'S', 'AGA': 'R', 'AGG': 'R',  # AGA/AGG are stop in mitochondria
+    'AGT': 'S', 'AGC': 'S', 'AGA': '*', 'AGG': '*',  # AGA/AGG are STOP in vertebrate mitochondria
     'GTT': 'V', 'GTC': 'V', 'GTA': 'V', 'GTG': 'V',
     'GCT': 'A', 'GCC': 'A', 'GCA': 'A', 'GCG': 'A',
     'GAT': 'D', 'GAC': 'D', 'GAA': 'E', 'GAG': 'E',
@@ -73,7 +73,7 @@ MITOCHONDRIAL_START_CODONS = {'ATG', 'ATA', 'ATT'}  # ATT sometimes reported but
 NUCLEAR_START_CODONS = {'ATG'}  # Nuclear genes typically use only ATG
 
 # Stop codons for different genetic codes
-MITOCHONDRIAL_STOP_CODONS = {'TAA', 'TAG'}
+MITOCHONDRIAL_STOP_CODONS = {'TAA', 'TAG', 'AGA', 'AGG'}  # Vertebrate mitochondrial stop codons
 NUCLEAR_STOP_CODONS = {'TAA', 'TAG', 'TGA'}
 
 def has_ambiguous_bases(codon):
@@ -338,11 +338,6 @@ def calculate_synonymous_nonsynonymous(seq1: str, seq2: str, strand: str = '+',
                 codon1 = seq1_for_bp[i:i+3]
                 codon2 = seq2_for_bp[i:i+3]
                 if len(codon1) != 3 or len(codon2) != 3:
-                    continue
-                # Remove codon if it contains anything other than A,T,G,C
-                #if has_ambiguous_bases(codon1) or has_ambiguous_bases(codon2):
-                    continue
-                #if '-' in codon1 or '-' in codon2:
                     continue
                 filtered_codons1.append(codon1)
                 filtered_codons2.append(codon2)

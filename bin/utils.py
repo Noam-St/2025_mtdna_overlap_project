@@ -356,7 +356,7 @@ def Which_tRNA(name, verbosity = 1):
         if c==len(consts.REPLACEMENT_DICT)-1:
             name=None
             return name
-        c=+1
+        c+=1
     try:
         if name in consts.TRNA_DICT.keys(): # if matched with any of the if's above (for tRNAs), replace with my annotation accordingly.
             name = consts.TRNA_DICT[name]

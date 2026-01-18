@@ -55,3 +55,5 @@ data/per_gene_alignment_fasta/
 data/haplogroups/all_haplogroups.csv
 data/haplogroups/haplogroup_markers.xlsx
 mitoriboseq_analysis/data/hek_ini/mito_cumsum_table.csv
+
+CODE_REVIEW.md
