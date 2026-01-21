@@ -15,6 +15,7 @@ from collections import defaultdict
 from scipy import stats
 from statsmodels.stats.multitest import multipletests
 from statsmodels.tsa.stattools import acf
+from statsmodels.stats.proportion import proportion_confint, confint_proportions_2indep
 from statannotations.Annotator import Annotator
 from adjustText import adjust_text
 
@@ -1110,6 +1111,108 @@ def compare_regional_distributions(results_df, metric_col='conservation',
     return fig, stats_results
 
 
+def _calculate_invariant_chi_squared(invariant_df, region_order):
+    """
+    Calculate Chi-squared tests comparing each MDP region to non-overlapping.
+
+    Uses Chi-squared test for comparing proportions of invariant sites between
+    MDP regions and non-overlapping regions. Falls back to Fisher's exact test
+    when any expected count is less than 5.
+
+    Args:
+        invariant_df (pd.DataFrame): DataFrame with columns: region_name, n_total,
+                                     n_invariant, n_variable, pct_invariant
+        region_order (list): List of region names in order (non-overlapping first)
+
+    Returns:
+        dict: Test results for each comparison with structure:
+              {
+                  'MDP_name_vs_non-overlapping': {
+                      'test': 'Chi-squared' or "Fisher's exact",
+                      'statistic': float,
+                      'pvalue_raw': float,
+                      'contingency_table': [[a, b], [c, d]],
+                      'expected_counts': [[...], [...]] or None,
+                      'n_mdp': int,
+                      'n_non_overlap': int,
+                      'pct_invariant_mdp': float,
+                      'pct_invariant_non_overlap': float
+                  },
+                  ...
+              }
+    """
+    from scipy.stats import chi2_contingency, fisher_exact
+
+    invariant_stats = {}
+
+    # Get non-overlapping counts
+    non_overlap_rows = invariant_df[invariant_df['region_name'] == 'non-overlapping']
+    if len(non_overlap_rows) == 0:
+        return invariant_stats
+
+    non_overlap = non_overlap_rows.iloc[0]
+    n_inv_non = non_overlap['n_invariant']
+    n_var_non = non_overlap['n_variable']
+
+    for region in region_order:
+        if region == 'non-overlapping':
+            continue
+
+        mdp_rows = invariant_df[invariant_df['region_name'] == region]
+        if len(mdp_rows) == 0:
+            continue
+
+        mdp = mdp_rows.iloc[0]
+        n_inv_mdp = mdp['n_invariant']
+        n_var_mdp = mdp['n_variable']
+
+        # Create contingency table
+        #                 Invariant  Variable
+        # MDP             n_inv_mdp  n_var_mdp
+        # Non-overlapping n_inv_non  n_var_non
+        contingency = [[n_inv_mdp, n_var_mdp],
+                       [n_inv_non, n_var_non]]
+
+        # Check expected counts for Chi-squared validity
+        try:
+            chi2, pval, dof, expected = chi2_contingency(contingency)
+
+            # Use Fisher's exact if any expected count < 5
+            if (expected < 5).any():
+                odds_ratio, pval = fisher_exact(contingency)
+                test_used = "Fisher's exact"
+                statistic = odds_ratio
+                expected_counts = None
+            else:
+                test_used = 'Chi-squared'
+                statistic = chi2
+                expected_counts = expected.tolist()
+        except Exception as e:
+            # Handle edge cases (e.g., all zeros in a row/column)
+            try:
+                odds_ratio, pval = fisher_exact(contingency)
+                test_used = "Fisher's exact"
+                statistic = odds_ratio
+                expected_counts = None
+            except Exception:
+                # Skip this comparison if both tests fail
+                continue
+
+        invariant_stats[f"{region}_vs_non-overlapping"] = {
+            'test': test_used,
+            'statistic': statistic,
+            'pvalue_raw': pval,
+            'contingency_table': contingency,
+            'expected_counts': expected_counts,
+            'n_mdp': n_inv_mdp + n_var_mdp,
+            'n_non_overlap': n_inv_non + n_var_non,
+            'pct_invariant_mdp': mdp['pct_invariant'],
+            'pct_invariant_non_overlap': non_overlap['pct_invariant']
+        }
+
+    return invariant_stats
+
+
 def plot_split_view_comparison(results_df, metric_col='conservation',
                                figsize=(14, 6), palette='Set2',
                                invariant_threshold=None,
@@ -1145,9 +1248,28 @@ def plot_split_view_comparison(results_df, metric_col='conservation',
 
     Returns:
         tuple: (fig, stats_dict) where stats_dict contains:
-               - 'invariant_percentages': DataFrame with % invariant per region
-               - 'variable_stats': Statistical comparison results for variable sites
+               - 'invariant_percentages': DataFrame with columns:
+                   - region_name, n_total, n_invariant, n_variable, pct_invariant
+                   - ci_lower, ci_upper (Wilson 95% CI bounds)
+               - 'invariant_stats': Chi-squared/Fisher's exact test results for
+                   proportion comparisons (each MDP vs non-overlapping):
+                   {
+                       'MDP_vs_non-overlapping': {
+                           'test': 'Chi-squared' or "Fisher's exact",
+                           'statistic': float,
+                           'pvalue_raw': float,
+                           'pvalue_corrected': float,
+                           'significant': bool,
+                           'contingency_table': [[a, b], [c, d]],
+                           'n_mdp': int,
+                           'n_non_overlap': int,
+                           'pct_invariant_mdp': float,
+                           'pct_invariant_non_overlap': float
+                       }, ...
+                   }
+               - 'variable_stats': Mann-Whitney/t-test results for variable sites
                - 'n_variable': Number of variable sites per region
+               - 'threshold': Invariant threshold used
     """
     # Auto-detect invariant threshold based on metric
     if invariant_threshold is None:
@@ -1182,7 +1304,7 @@ def plot_split_view_comparison(results_df, metric_col='conservation',
             lambda x: 'invariant' if x <= invariant_threshold else 'variable'
         )
 
-    # Calculate % invariant sites per region
+    # Calculate % invariant sites per region with Wilson confidence intervals
     invariant_percentages = []
     n_variable_dict = {}
     for region in order:
@@ -1192,12 +1314,30 @@ def plot_split_view_comparison(results_df, metric_col='conservation',
         n_variable = len(region_data[region_data['site_type'] == 'variable'])
         pct_invariant = (n_invariant / n_total * 100) if n_total > 0 else 0
 
+        # Calculate Wilson score 95% confidence interval for the proportion
+        # Wilson interval is preferred for proportions near 0 or 1
+        if n_total > 0:
+            ci_low, ci_high = proportion_confint(
+                count=n_invariant,
+                nobs=n_total,
+                alpha=0.05,
+                method='wilson'
+            )
+            # Convert from proportion [0,1] to percentage [0,100]
+            ci_lower = ci_low * 100
+            ci_upper = ci_high * 100
+        else:
+            ci_lower = np.nan
+            ci_upper = np.nan
+
         invariant_percentages.append({
             'region_name': region,
             'n_total': n_total,
             'n_invariant': n_invariant,
             'n_variable': n_variable,
-            'pct_invariant': pct_invariant
+            'pct_invariant': pct_invariant,
+            'ci_lower': ci_lower,
+            'ci_upper': ci_upper
         })
         n_variable_dict[region] = n_variable
 
@@ -1361,10 +1501,35 @@ def plot_split_view_comparison(results_df, metric_col='conservation',
     if output_path:
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
 
+    # Calculate Chi-squared/Fisher's exact tests for invariant site proportions
+    invariant_stats = _calculate_invariant_chi_squared(invariant_df, order)
+
+    # Apply FDR correction to invariant_stats across all MDP comparisons
+    if len(invariant_stats) > 0 and correction_method is not None:
+        # Collect all raw p-values
+        comparison_keys = list(invariant_stats.keys())
+        raw_pvals = [invariant_stats[k]['pvalue_raw'] for k in comparison_keys]
+
+        # Apply multiple testing correction
+        reject, pvals_corrected, _, _ = multipletests(raw_pvals, method=correction_method)
+
+        # Update invariant_stats with corrected p-values
+        for i, key in enumerate(comparison_keys):
+            invariant_stats[key]['pvalue_corrected'] = pvals_corrected[i]
+            invariant_stats[key]['significant'] = reject[i]
+            invariant_stats[key]['correction_method'] = correction_method
+    else:
+        # No correction - use raw p-values
+        for key in invariant_stats:
+            invariant_stats[key]['pvalue_corrected'] = invariant_stats[key]['pvalue_raw']
+            invariant_stats[key]['significant'] = invariant_stats[key]['pvalue_raw'] < 0.05
+            invariant_stats[key]['correction_method'] = 'none'
+
     # Return statistics
     stats_dict = {
         'invariant_percentages': invariant_df,
-        'variable_stats': variable_stats,
+        'invariant_stats': invariant_stats,  # NEW: Chi-squared/Fisher's exact test results
+        'variable_stats': variable_stats,    # Keep existing Mann-Whitney results
         'n_variable': n_variable_dict,
         'threshold': invariant_threshold
     }
@@ -1739,8 +1904,8 @@ def plot_mdp_invariant_sites_summary(stats_list, gene_names,
     Create a summary plot comparing invariant site percentages across multiple MDPs.
 
     Shows the percent difference in invariant sites between non-overlapping regions
-    and each overlapping region, with statistical significance from Mann-Whitney tests
-    comparing conservation score distributions (from the variable sites analysis).
+    and each overlapping region, with statistical significance from Chi-squared or
+    Fisher's exact tests comparing proportions of invariant sites (from invariant_stats).
 
     Args:
         stats_list (list): List of conservation_splitview_stats dictionaries from
@@ -1765,8 +1930,11 @@ def plot_mdp_invariant_sites_summary(stats_list, gene_names,
                - non_overlap_pct: % invariant sites in non-overlapping region
                - overlap_pct: % invariant sites in overlapping region
                - pct_difference: Absolute difference (overlap - non_overlap)
-               - mann_whitney_statistic: Mann-Whitney U test statistic (from variable_stats)
-               - pvalue_raw: Raw p-value from Mann-Whitney test
+               - ci_lower, ci_upper: 95% CI for overlap region % invariant (Wilson)
+               - ci_diff_lower, ci_diff_upper: 95% CI for the difference in proportions
+               - test_used: 'Chi-squared' or "Fisher's exact"
+               - statistic: Test statistic (chi2 or odds ratio)
+               - pvalue_raw: Raw p-value from Chi-squared/Fisher's exact test
                - pvalue_corrected: Multiple testing corrected p-value
                - significant: Boolean indicating significance after correction
 
@@ -1782,7 +1950,8 @@ def plot_mdp_invariant_sites_summary(stats_list, gene_names,
 
     for gene_name, stats in zip(gene_names, stats_list):
         invariant_df = stats['invariant_percentages']
-        variable_stats = stats.get('variable_stats', {})
+        # Use invariant_stats (Chi-squared/Fisher's exact) for proportion comparisons
+        invariant_stats = stats.get('invariant_stats', {})
 
         # Get non-overlapping data
         non_overlap_row = invariant_df[invariant_df['region_name'] == 'non-overlapping']
@@ -1791,6 +1960,8 @@ def plot_mdp_invariant_sites_summary(stats_list, gene_names,
             continue
 
         non_overlap_pct = non_overlap_row['pct_invariant'].values[0]
+        non_overlap_n_invariant = non_overlap_row['n_invariant'].values[0]
+        non_overlap_n_total = non_overlap_row['n_total'].values[0]
 
         # Compare each overlapping region
         for _, row in invariant_df.iterrows():
@@ -1801,17 +1972,38 @@ def plot_mdp_invariant_sites_summary(stats_list, gene_names,
             overlap_pct = row['pct_invariant']
             pct_difference = overlap_pct - non_overlap_pct
 
-            # Get Mann-Whitney test results from variable_stats
+            # Get Wilson CI for this region
+            ci_lower = row.get('ci_lower', np.nan)
+            ci_upper = row.get('ci_upper', np.nan)
+
+            # Get counts for CI of difference calculation
+            overlap_n_invariant = row['n_invariant']
+            overlap_n_total = row['n_total']
+
+            # Calculate CI for difference in proportions using Newcomb method
+            try:
+                ci_diff_low, ci_diff_high = confint_proportions_2indep(
+                    count1=overlap_n_invariant, nobs1=overlap_n_total,
+                    count2=non_overlap_n_invariant, nobs2=non_overlap_n_total,
+                    method='newcomb'
+                )
+                # Convert from proportion to percentage
+                ci_diff_lower = ci_diff_low * 100
+                ci_diff_upper = ci_diff_high * 100
+            except Exception:
+                ci_diff_lower = np.nan
+                ci_diff_upper = np.nan
+
+            # Get Chi-squared/Fisher's exact test results from invariant_stats
             comparison_key = f"{region_name}_vs_non-overlapping"
-            if comparison_key in variable_stats:
-                test_results = variable_stats[comparison_key]
-                mann_whitney_stat = test_results.get('statistic', np.nan)
-                # Get the already-corrected p-value from variable_stats
+            if comparison_key in invariant_stats:
+                test_results = invariant_stats[comparison_key]
+                test_used = test_results.get('test', 'Unknown')
+                statistic = test_results.get('statistic', np.nan)
                 pval_raw = test_results.get('pvalue_raw', np.nan)
-                # Note: variable_stats already has correction applied within each gene
-                # We'll re-apply correction across all genes below
             else:
-                mann_whitney_stat = np.nan
+                test_used = 'N/A'
+                statistic = np.nan
                 pval_raw = np.nan
 
             summary_data.append({
@@ -1820,7 +2012,14 @@ def plot_mdp_invariant_sites_summary(stats_list, gene_names,
                 'non_overlap_pct': non_overlap_pct,
                 'overlap_pct': overlap_pct,
                 'pct_difference': pct_difference,
-                'mann_whitney_statistic': mann_whitney_stat,
+                'ci_lower': ci_lower,
+                'ci_upper': ci_upper,
+                'ci_diff_lower': ci_diff_lower,
+                'ci_diff_upper': ci_diff_upper,
+                'n_overlap': overlap_n_total,
+                'n_non_overlap': non_overlap_n_total,
+                'test_used': test_used,
+                'statistic': statistic,
                 'pvalue_raw': pval_raw
             })
 
@@ -1866,28 +2065,47 @@ def plot_mdp_invariant_sites_summary(stats_list, gene_names,
                 palette=palette, alpha=0.8, edgecolor='black', linewidth=0.5,
                 dodge=False, ax=ax, hue_order=gene_names, order=region_order)
 
-    # Add significance markers
-    # With dodge=False, bars are positioned at integer indices (0, 1, 2, ...)
-    n_regions = len(region_order)
-
     # Create a mapping of (gene, region) -> bar position
+    n_regions = len(region_order)
     bar_positions = {}
     for idx, region in enumerate(region_order):
         region_data = summary_df[summary_df['region'] == region]
         for _, row in region_data.iterrows():
             bar_positions[(row['gene'], region)] = idx
 
-    # Iterate through data and add significance markers
+    # Add error bars showing 95% CI for the difference in proportions
+    for _, row in summary_df.iterrows():
+        gene = row['gene']
+        region = row['region']
+        y_val = row['pct_difference']
+        ci_lower = row.get('ci_diff_lower', np.nan)
+        ci_upper = row.get('ci_diff_upper', np.nan)
+
+        if not np.isnan(ci_lower) and not np.isnan(ci_upper):
+            bar_x = bar_positions.get((gene, region), 0)
+            # Error bar: distance from center to lower and upper bounds
+            yerr_lower = y_val - ci_lower
+            yerr_upper = ci_upper - y_val
+            ax.errorbar(bar_x, y_val, yerr=[[yerr_lower], [yerr_upper]],
+                       fmt='none', color='black', capsize=3, capthick=1.5,
+                       linewidth=1.5, alpha=0.8)
+
+    # Add significance markers
     for _, row in summary_df.iterrows():
         if row['significant']:
             gene = row['gene']
             region = row['region']
             pval = row['pvalue_corrected']
             y_val = row['pct_difference']
+            ci_upper = row.get('ci_diff_upper', y_val)
 
             # Get bar position
             bar_x = bar_positions.get((gene, region), 0)
-            y_pos = y_val + (1.5 if y_val > 0 else -1.5)
+            # Position marker above the error bar
+            y_pos = (ci_upper if not np.isnan(ci_upper) else y_val) + 1.0
+            if y_val < 0:
+                ci_lower = row.get('ci_diff_lower', y_val)
+                y_pos = (ci_lower if not np.isnan(ci_lower) else y_val) - 1.0
 
             # Determine number of asterisks based on p-value
             if pval < 0.001:
@@ -1914,7 +2132,7 @@ def plot_mdp_invariant_sites_summary(stats_list, gene_names,
 
     # Add note about significance levels
     if show_title:
-        note_text = f'* p < 0.05, ** p < 0.01, *** p < 0.001\n(Mann-Whitney test, Correction: {correction_method if correction_method else "none"})'
+        note_text = f'* p < 0.05, ** p < 0.01, *** p < 0.001\n(Chi-squared/Fisher exact test, Correction: {correction_method if correction_method else "none"})'
         ax.text(0.02, 0.98, note_text, transform=ax.transAxes,
                fontsize=8, verticalalignment='top',
                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))

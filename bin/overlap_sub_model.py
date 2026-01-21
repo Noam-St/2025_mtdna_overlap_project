@@ -170,8 +170,10 @@ class ARFomeNormalized:
                                                    frame_shift, alternative_strand, verbose=False if verbose <= 1 else verbose-1)
                     
                     # --- WEIGHTING LOGIC ---
-                    # Check if this theoretical mutation is a Transition or Transversion
-                    # Since transitions are much more likely to occur than transversions, the potential for transitions is weighted down by a factor of 'titv_ratio' (potentials are denominators when calculating rates)
+                    # Transitions occur more frequently than transversions. 
+                    # To normalize the rate, we increase the 'potential' count for transitions 
+                    # using the titv_ratio. A larger potential (denominator) results 
+                    # in a normalized (lower) rate.
                     is_transition = (original_base, mut_base) in self.transitions
                     weight = titv_ratio if is_transition else 1.0
                     
@@ -226,7 +228,8 @@ class ARFomeNormalized:
             consensus_codon = cons_can_str[i:i+3]
             u = cons_can_str[max(0, i-2):i] 
             d = cons_can_str[i+3:i+5]       
-            
+            if verbose:
+                print(f"\nAnalyzing codon at index {i}: {u}[{consensus_codon}]{d}")
             # Skip edge cases with insufficient context
             if len(u) < 2 or len(d) < 2: 
                 if verbose:
@@ -257,6 +260,8 @@ class ARFomeNormalized:
                         if consensus_codon[k] != variant_codon[k]:
                             bases_old.append(consensus_codon[k])
                             bases_new.append(variant_codon[k])
+                    if verbose:
+                        print(f"Index {i}: Found mutation(s) at bases {bases_old} -> {bases_new} (Count: {count})")
                     
                     # --- FIXED Ti/Tv LOGIC ---
                     # Only count strictly valid DNA bases. Ignore N, -, R, Y, etc.

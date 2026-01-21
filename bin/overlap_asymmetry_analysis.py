@@ -25,6 +25,9 @@ Usage:
 Author: Analysis for mitochondrial microproteins
 """
 
+import sys
+sys.path.append('/mnt/user-data/uploads')
+
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional
@@ -95,10 +98,12 @@ def infer_frameshift(canonical_cds: str, alternative_cds: str, return_start_inde
     else:
         seed = seq_alt[:seed_length]
         
-    # 3. Find the position of the alternative start within the canonical sequence
     start_index = seq_can.find(seed)
-    result = "No match found"
-    # 4. Infer logic
+    if start_index == -1:
+        if return_start_index:
+            return "No match found", -1
+        return "No match found"
+
     frame_offset = start_index % 3
     
     if frame_offset == 1:
@@ -999,7 +1004,11 @@ def calculate_nucleotide_diversity_unweighted(bases_list: List[str]) -> float:
 
     return 1.0 if len(unique_bases) > 1 else 0.0
 
-def calculate_codon_position_titv(sequences: List[str], position: int = 0) -> Dict:
+def calculate_codon_position_titv(
+    sequences: List[str],
+    position: int = 0,
+    ref_seq: Optional[str] = None
+) -> Dict:
     """
     Calculate Ti/Tv ratio and nucleotide diversity for a specific codon position.
 
@@ -1009,56 +1018,81 @@ def calculate_codon_position_titv(sequences: List[str], position: int = 0) -> Di
         List of aligned DNA sequences (should be in-frame, length divisible by 3)
     position : int
         Codon position (0=first, 1=second, 2=third)
+    ref_seq : Optional[str]
+        Reference sequence to use. If None, consensus (major allele at each position)
+        is computed from the sequences.
 
     Returns:
     --------
     Dict containing:
-        - ti_count: Number of transitions observed
-        - tv_count: Number of transversions observed
-        - ti_tv_ratio: Transition/transversion ratio (with +0.5 pseudocount) - known as Haldane-Anscombe correction
+        - ti_count: Total pairwise transitions (each difference to reference counted)
+        - tv_count: Total pairwise transversions (each difference to reference counted)
+        - ti_tv_ratio: Unweighted Ti/Tv ratio (with +0.5 pseudocount)
         - ti_tv_ratio_raw: Raw ratio without pseudocount
-        - total_substitutions: Total number of substitutions analyzed
+        - ti_weighted: Frequency-weighted transition contribution (sum of variant frequencies)
+        - tv_weighted: Frequency-weighted transversion contribution (sum of variant frequencies)
+        - ti_tv_ratio_weighted: Weighted Ti/Tv ratio (with +0.5 pseudocount)
+        - total_substitutions: Total number of pairwise substitutions
         - nucleotide_diversity: Average nucleotide diversity across positions
     """
+    empty_result = {
+        'ti_count': 0,
+        'tv_count': 0,
+        'ti_tv_ratio': 1.0,  # (0+0.5)/(0+0.5)
+        'ti_tv_ratio_raw': np.nan,
+        'ti_weighted': 0.0,
+        'tv_weighted': 0.0,
+        'ti_tv_ratio_weighted': 1.0,
+        'total_substitutions': 0,
+        'nucleotide_diversity': 0.0
+    }
+
     if not sequences or len(sequences) < 2:
-        return {
-            'ti_count': 0,
-            'tv_count': 0,
-            'ti_tv_ratio': 1.0,  # (0+1)/(0+1)
-            'ti_tv_ratio_raw': np.nan,
-            'total_substitutions': 0,
-            'nucleotide_diversity': 0.0
-        }
+        return empty_result
 
     # Clean sequences and ensure they're in frame
     clean_seqs = []
     for seq in sequences:
         seq = seq.upper().strip()
         # Trim to multiple of 3
-        seq = seq[:len(seq) - (len(seq) % 3)] # ACGAC - > ACG
+        seq = seq[:len(seq) - (len(seq) % 3)]  # ACGAC -> ACG
         if len(seq) >= 3:
             clean_seqs.append(seq)
 
     if len(clean_seqs) < 2:
-        return {
-            'ti_count': 0,
-            'tv_count': 0,
-            'ti_tv_ratio': 1.0,
-            'ti_tv_ratio_raw': np.nan,
-            'total_substitutions': 0,
-            'nucleotide_diversity': 0.0
-        }
+        return empty_result
 
-    # Extract bases at the specified codon position
+    # Extract bases at the specified codon position for all sequences
     position_bases = []
     for seq in clean_seqs:
         bases = [seq[i] for i in range(position, len(seq), 3) if i < len(seq)]
         position_bases.append(bases)
 
-    # Calculate nucleotide diversity for each position
     n_positions = len(position_bases[0])
-    diversities = []
+    n_seqs = len(clean_seqs)
 
+    # Compute or extract reference bases at codon positions
+    if ref_seq is not None:
+        # Use provided reference sequence
+        ref_seq = ref_seq.upper().strip()
+        ref_seq = ref_seq[:len(ref_seq) - (len(ref_seq) % 3)]
+        ref_bases = [ref_seq[i] for i in range(position, len(ref_seq), 3) if i < len(ref_seq)]
+    else:
+        # Compute consensus (major allele at each position)
+        ref_bases = []
+        for pos_idx in range(n_positions):
+            bases_at_pos = [seq_bases[pos_idx] for seq_bases in position_bases
+                           if pos_idx < len(seq_bases) and seq_bases[pos_idx] in 'ATGC']
+            if bases_at_pos:
+                # Get most common base (consensus)
+                base_counts = Counter(bases_at_pos)
+                consensus_base = base_counts.most_common(1)[0][0]
+                ref_bases.append(consensus_base)
+            else:
+                ref_bases.append('N')  # No valid bases at this position
+
+    # Calculate nucleotide diversity for each position
+    diversities = []
     for pos_idx in range(n_positions):
         bases_at_pos = [seq_bases[pos_idx] for seq_bases in position_bases
                         if pos_idx < len(seq_bases)]
@@ -1067,30 +1101,42 @@ def calculate_codon_position_titv(sequences: List[str], position: int = 0) -> Di
 
     avg_diversity = np.mean(diversities) if diversities else 0.0
 
-    # Count transitions and transversions
-    ti_count = 0
-    tv_count = 0
+    # Count pairwise substitutions and frequency-weighted substitutions
+    ti_count = 0  # Total pairwise transitions (each difference counted)
+    tv_count = 0  # Total pairwise transversions (each difference counted)
+    ti_weighted = 0.0  # Frequency-weighted transition contribution
+    tv_weighted = 0.0  # Frequency-weighted transversion contribution
 
-    # Use the first sequence as reference
-    ref_bases = position_bases[0]
+    for pos_idx in range(min(n_positions, len(ref_bases))):
+        ref_base = ref_bases[pos_idx]
 
-    # Collect unique substitutions: (position_index, alt_base)
+        # Skip if reference is ambiguous
+        if ref_base not in 'ATGC':
+            continue
 
-    for alt_bases in position_bases[1:]:
-        min_len = min(len(ref_bases), len(alt_bases))
-        for i in range(min_len):
-            ref_base = ref_bases[i]
-            alt_base = alt_bases[i]
+        # Collect all variant bases at this position with their counts
+        bases_at_pos = [seq_bases[pos_idx] for seq_bases in position_bases
+                        if pos_idx < len(seq_bases) and seq_bases[pos_idx] in 'ATGC']
 
-            # Skip if same or if either is ambiguous
-            if ref_base == alt_base or ref_base not in 'ATGC' or alt_base not in 'ATGC':
-                continue
+        if not bases_at_pos:
+            continue
 
-            sub_type = classify_substitution(ref_base, alt_base)
+        base_counts = Counter(bases_at_pos)
+        total_valid = sum(base_counts.values())
+
+        for variant_base, count in base_counts.items():
+            if variant_base == ref_base:
+                continue  # Not a substitution
+
+            freq = count / total_valid
+            sub_type = classify_substitution(ref_base, variant_base)
+
             if sub_type == 'transition':
-                ti_count += 1
+                ti_count += count  # Count each pairwise difference
+                ti_weighted += freq
             elif sub_type == 'transversion':
-                tv_count += 1
+                tv_count += count  # Count each pairwise difference
+                tv_weighted += freq
 
     total_subs = ti_count + tv_count
 
@@ -1100,17 +1146,23 @@ def calculate_codon_position_titv(sequences: List[str], position: int = 0) -> Di
     # Ratio with pseudocount (add 0.5 to both to avoid division by zero)
     ti_tv_ratio = (ti_count + 0.5) / (tv_count + 0.5)
 
+    # Weighted ratio with pseudocount
+    ti_tv_ratio_weighted = (ti_weighted + 0.5) / (tv_weighted + 0.5)
+
     return {
         'ti_count': ti_count,
         'tv_count': tv_count,
         'ti_tv_ratio': ti_tv_ratio,
         'ti_tv_ratio_raw': ti_tv_ratio_raw,
+        'ti_weighted': ti_weighted,
+        'tv_weighted': tv_weighted,
+        'ti_tv_ratio_weighted': ti_tv_ratio_weighted,
         'total_substitutions': total_subs,
         'nucleotide_diversity': avg_diversity
     }
 
 
-def _process_random_region(region_seqs: List[str]) -> Dict:
+def _process_random_region(region_seqs: List[str], ref_seq: Optional[str] = None) -> Dict:
     """
     Helper function to process a single random region (for parallel processing).
 
@@ -1118,6 +1170,8 @@ def _process_random_region(region_seqs: List[str]) -> Dict:
     -----------
     region_seqs : List[str]
         List of sequences for a random region
+    ref_seq : Optional[str]
+        Reference sequence for Ti/Tv calculation. If None, consensus is used.
 
     Returns:
     --------
@@ -1130,9 +1184,9 @@ def _process_random_region(region_seqs: List[str]) -> Dict:
         return None
 
     # Calculate Ti/Tv for each position
-    first_result = calculate_codon_position_titv(region_seqs, position=0)
-    second_result = calculate_codon_position_titv(region_seqs, position=1)
-    third_result = calculate_codon_position_titv(region_seqs, position=2)
+    first_result = calculate_codon_position_titv(region_seqs, position=0, ref_seq=ref_seq)
+    second_result = calculate_codon_position_titv(region_seqs, position=1, ref_seq=ref_seq)
+    third_result = calculate_codon_position_titv(region_seqs, position=2, ref_seq=ref_seq)
 
     # Combined first + second
     ti_12 = first_result['ti_count'] + second_result['ti_count']
@@ -1228,7 +1282,9 @@ def analyze_rrna_mdp_asymmetry(df: pd.DataFrame,
                                n_iterations: int = 1000,
                                seed: Optional[int] = 42,
                                threshold: float = 0.05,
-                               verbose: bool = True) -> Dict:
+                               verbose: bool = True,
+                               ref_seq: Optional[str] = None,
+                               clean_rrna: bool = False) -> Dict:
     """
     Analyze Ti/Tv asymmetry between MDPs and random regions within rRNA genes.
 
@@ -1237,16 +1293,16 @@ def analyze_rrna_mdp_asymmetry(df: pd.DataFrame,
     compared to randomly selected rRNA regions that don't overlap with MDPs.
 
     IMPORTANT:
-    - rRNA sequences are NOT cleaned (they are non-coding)
+    - rRNA sequences are cleaned with coding=False only if clean_rrna=True
     - MDP sequences ARE cleaned using clean_sequences_adaptive (they are protein-coding)
-    - Random regions from rRNA are NOT cleaned (for fair comparison with non-coding baseline)
+    - Random regions from rRNA use the same cleaning as rRNA sequences
 
     Parameters:
     -----------
     df : pd.DataFrame
         DataFrame with sequence data
     rrna_seq_col : str
-        Column name containing rRNA gene sequences (will NOT be cleaned)
+        Column name containing rRNA gene sequences
     mdp_configs : List[Dict]
         List of MDP configuration dictionaries, each containing:
         - 'name': Name of the MDP (e.g., 'SHLP3')
@@ -1258,9 +1314,17 @@ def analyze_rrna_mdp_asymmetry(df: pd.DataFrame,
     seed : Optional[int]
         Random seed for reproducibility (default=42)
     threshold : float
-        Threshold for clean_sequences_adaptive for MDP sequences only (default=0.05)
+        Threshold for clean_sequences_adaptive (default=0.05)
     verbose : bool
         Print progress messages (default=True)
+    ref_seq : Optional[str]
+        Reference rRNA sequence for Ti/Tv calculation. If None, consensus
+        (major allele at each position) is computed from the sequences.
+        This allows using an ancestral or outgroup sequence as reference.
+    clean_rrna : bool
+        If True, clean rRNA sequences using clean_sequences_adaptive with
+        coding=False (position-by-position cleaning for non-coding sequences).
+        Default is False to maintain backward compatibility.
 
     Returns:
     --------
@@ -1290,10 +1354,30 @@ def analyze_rrna_mdp_asymmetry(df: pd.DataFrame,
     if len(rrna_seqs) < 2:
         return {'error': 'Insufficient rRNA sequences for analysis'}
 
+    # Optionally clean rRNA sequences with coding=False (non-coding mode)
+    if clean_rrna:
+        if verbose:
+            print(f"\nCleaning {len(rrna_seqs)} rRNA sequences (coding=False, threshold={threshold})...")
+        cleaned_rrna = cag.clean_sequences_adaptive(rrna_seqs, threshold=threshold, coding=False)
+        rrna_seqs = cleaned_rrna.cleaned_sequences
+        if verbose:
+            print(f"  After cleaning: {len(rrna_seqs)} sequences, {cleaned_rrna.final_codon_count} positions")
+            print(f"  Removed {len(cleaned_rrna.removed_sequence_indices)} sequences, {len(cleaned_rrna.removed_positions)} positions")
+
+    if len(rrna_seqs) < 2:
+        return {'error': 'Insufficient rRNA sequences after cleaning'}
+
     if verbose:
         print(f"\nUsing {len(rrna_seqs)} rRNA sequences")
-        print("Note: rRNA sequences are NOT cleaned (not protein-coding)")
-        print("      Only MDP sequences (protein-coding) will be cleaned")
+        if clean_rrna:
+            print("Note: rRNA sequences were cleaned with coding=False (non-coding mode)")
+        else:
+            print("Note: rRNA sequences are NOT cleaned (use clean_rrna=True to enable)")
+        print("      MDP sequences (protein-coding) will be cleaned with coding=True")
+        if ref_seq is not None:
+            print(f"      Using provided reference sequence (length={len(ref_seq)})")
+        else:
+            print("      Using consensus (major allele) as reference")
 
     # Analyze each MDP
     mdp_results = {}
@@ -1377,10 +1461,21 @@ def analyze_rrna_mdp_asymmetry(df: pd.DataFrame,
                 print(f"  All {n_codons} codons: {' '.join(all_codons)} -> {' '.join(all_aa)}")
 
         # Calculate Ti/Tv for each codon position
+        # Extract MDP-specific reference sequence if global ref_seq is provided
+        mdp_ref_seq = None
+        if ref_seq is not None and start is not None and end is not None:
+            if len(ref_seq) >= end:
+                mdp_ref_seq = ref_seq[start:end]
+                if verbose:
+                    print(f"  Using reference sequence for MDP (positions {start}-{end})")
+            else:
+                if verbose:
+                    print(f"  Warning: ref_seq too short for MDP region, using consensus")
+
         mdp_titv = {}
         for pos in [0, 1, 2]:
             pos_name = ['first', 'second', 'third'][pos]
-            result = calculate_codon_position_titv(mdp_seqs, position=pos)
+            result = calculate_codon_position_titv(mdp_seqs, position=pos, ref_seq=mdp_ref_seq)
             mdp_titv[pos_name] = result
 
             if verbose:
@@ -1534,11 +1629,28 @@ def analyze_rrna_mdp_asymmetry(df: pd.DataFrame,
         random_diversity_12 = []
         random_diversity_3 = []
 
+        # Also collect Ti/Tv counts and per-position diversity for global statistics
+        random_ti_first = []
+        random_tv_first = []
+        random_ti_second = []
+        random_tv_second = []
+        random_ti_third = []
+        random_tv_third = []
+        random_diversity_first = []
+        random_diversity_second = []
+
         # Use ThreadPoolExecutor for I/O-bound operations (faster for this use case)
         with ThreadPoolExecutor(max_workers=8) as executor:
-            # Submit all tasks
-            future_to_idx = {executor.submit(_process_random_region, region_seqs): idx
-                            for idx, region_seqs in enumerate(random_regions)}
+            # Submit all tasks - pass ref_seq for each region if provided
+            # For random regions, extract the corresponding portion of ref_seq
+            future_to_idx = {}
+            for idx, region_seqs in enumerate(random_regions):
+                # If ref_seq is provided, we need to extract the matching region
+                # Note: random_regions are extracted at various positions, so we pass
+                # ref_seq=None here and let consensus be computed per region
+                # (Using a global ref_seq for random regions would require tracking positions)
+                region_ref = None  # Use consensus for random regions
+                future_to_idx[executor.submit(_process_random_region, region_seqs, region_ref)] = idx
 
             # Collect results as they complete
             for future in as_completed(future_to_idx):
@@ -1558,6 +1670,16 @@ def analyze_rrna_mdp_asymmetry(df: pd.DataFrame,
                 random_titv_12.append(result['titv_12'])
                 random_diversity_12.append(result['diversity_12'])
                 random_diversity_3.append(result['third']['nucleotide_diversity'])
+
+                # Collect Ti/Tv counts for global statistics (avoids re-extraction)
+                random_ti_first.append(result['first']['ti_count'])
+                random_tv_first.append(result['first']['tv_count'])
+                random_ti_second.append(result['second']['ti_count'])
+                random_tv_second.append(result['second']['tv_count'])
+                random_ti_third.append(result['third']['ti_count'])
+                random_tv_third.append(result['third']['tv_count'])
+                random_diversity_first.append(result['first']['nucleotide_diversity'])
+                random_diversity_second.append(result['second']['nucleotide_diversity'])
 
         # Filter out infinite values (pseudocount should prevent this, but just in case)
         random_titv_first = [x for x in random_titv_first if np.isfinite(x)]
@@ -1589,11 +1711,20 @@ def analyze_rrna_mdp_asymmetry(df: pd.DataFrame,
             'combined_12_titv': random_titv_12,
             'combined_12_diversity': random_diversity_12,
             'third_diversity': random_diversity_3,
-            'n_valid_regions': len(random_titv_12)
+            'n_valid_regions': len(random_titv_12),
+            # Store counts for global statistics (avoids re-extraction)
+            'ti_counts_first': random_ti_first,
+            'tv_counts_first': random_tv_first,
+            'ti_counts_second': random_ti_second,
+            'tv_counts_second': random_tv_second,
+            'ti_counts_third': random_ti_third,
+            'tv_counts_third': random_tv_third,
+            'diversity_first': random_diversity_first,
+            'diversity_second': random_diversity_second
         }
 
     # Calculate global Ti/Tv ratios across all random regions
-    # Need to re-process to get Ti/Tv counts (not just ratios)
+    # Use pre-collected counts from first pass (no re-extraction needed)
     if len(random_results) > 0:
         if verbose:
             print(f"\n{'='*80}")
@@ -1602,6 +1733,7 @@ def analyze_rrna_mdp_asymmetry(df: pd.DataFrame,
             print("  Aggregating Ti/Tv counts from all random regions...")
 
         # Collect all Ti/Tv counts from all random regions across all MDPs
+        # Using data stored during the first pass
         all_random_ti_first = []
         all_random_tv_first = []
         all_random_ti_second = []
@@ -1613,42 +1745,18 @@ def analyze_rrna_mdp_asymmetry(df: pd.DataFrame,
         all_random_diversity_third = []
         all_random_diversity_12 = []
 
-        # Re-process random regions to get Ti/Tv counts
-        for mdp_name, mdp_data in mdp_results.items():
-            if mdp_name not in random_results:
-                continue
-
-            region_length = mdp_data['length']
-
-            # Re-extract random regions (using same parameters)
-            random_regions = extract_random_regions(
-                rrna_seqs,
-                region_length,
-                excluded_ranges,
-                n_iterations,
-                seed
-            )
-
-            # Process each random region to get Ti/Tv counts
-            with ThreadPoolExecutor(max_workers=8) as executor:
-                future_to_idx = {executor.submit(_process_random_region, region_seqs): idx
-                                for idx, region_seqs in enumerate(random_regions)}
-
-                for future in as_completed(future_to_idx):
-                    result = future.result()
-                    if result is None:
-                        continue
-
-                    all_random_ti_first.append(result['first']['ti_count'])
-                    all_random_tv_first.append(result['first']['tv_count'])
-                    all_random_ti_second.append(result['second']['ti_count'])
-                    all_random_tv_second.append(result['second']['tv_count'])
-                    all_random_ti_third.append(result['third']['ti_count'])
-                    all_random_tv_third.append(result['third']['tv_count'])
-                    all_random_diversity_first.append(result['first']['nucleotide_diversity'])
-                    all_random_diversity_second.append(result['second']['nucleotide_diversity'])
-                    all_random_diversity_third.append(result['third']['nucleotide_diversity'])
-                    all_random_diversity_12.append(result['diversity_12'])
+        for mdp_name, random_data in random_results.items():
+            # Extend with pre-collected counts from first pass
+            all_random_ti_first.extend(random_data['ti_counts_first'])
+            all_random_tv_first.extend(random_data['tv_counts_first'])
+            all_random_ti_second.extend(random_data['ti_counts_second'])
+            all_random_tv_second.extend(random_data['tv_counts_second'])
+            all_random_ti_third.extend(random_data['ti_counts_third'])
+            all_random_tv_third.extend(random_data['tv_counts_third'])
+            all_random_diversity_first.extend(random_data['diversity_first'])
+            all_random_diversity_second.extend(random_data['diversity_second'])
+            all_random_diversity_third.extend(random_data['third_diversity'])
+            all_random_diversity_12.extend(random_data['combined_12_diversity'])
 
         # Sum all Ti and Tv counts
         global_random_ti_first = sum(all_random_ti_first)
@@ -1871,7 +1979,9 @@ def analyze_rrna_mdp_asymmetry(df: pd.DataFrame,
             'rrna_gene': rrna_seq_col,
             'threshold': threshold,
             'n_mdps_analyzed': len(mdp_results),
-            'excluded_ranges': excluded_ranges
+            'excluded_ranges': excluded_ranges,
+            'ref_seq_provided': ref_seq is not None,
+            'clean_rrna': clean_rrna
         }
     }
 
